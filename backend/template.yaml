@@ -1,0 +1,321 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: aws-psa-interview
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  paramEnvironment:
+    Type: String
+    AllowedValues:
+      - stage
+      - prod
+    Default: stage
+  paramServiceName:
+    Type: String
+  paramDomainName:
+    Type: String
+  paramCertificateArn:
+    Type: String
+  paramHostedZoneId:
+    Type: String
+
+Globals:
+  Function:
+    Layers:
+      - !Ref LayerDepencies
+      - !Ref LayerFunctions
+    Runtime: nodejs14.x
+    Timeout: 15
+    Tracing: Active
+    Environment:
+      Variables:
+        FAQ_TABLE: !Ref FAQTopics
+        # Reuse connection to DynamoDB to improve response time
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+
+
+Resources:
+  # API Gateway resource
+  FAQApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${paramServiceName}-${paramEnvironment}"
+      StageName: !Sub "${paramServiceName}-${paramEnvironment}"
+      #EndpointConfiguration: REGIONAL
+      Cors:
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+      Domain:
+        DomainName: !Sub "${paramDomainName}"
+        CertificateArn: !Sub "${paramCertificateArn}"
+        # EndpointConfiguration: REGIONAL
+        Route53:
+          HostedZoneId: !Sub "${paramHostedZoneId}"
+      Auth:
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt "UserPool.Arn"
+        DefaultAuthorizer: CognitoAuthorizer
+
+  CreateTopicFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-create-faq"
+      Handler: create-topic.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FAQTopics
+      Events:
+        CheckCardStatus:
+          Type: Api 
+          Properties:
+            Path: /topic
+            Method: POST
+            RestApiId:
+              Ref: FAQApi
+  
+  DeleteTopicFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-delete-faq"
+      Handler: delete-topic.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FAQTopics
+      Events:
+        CheckCardStatus:
+          Type: Api 
+          Properties:
+            Path: /topic
+            Method: DELETE
+            RestApiId:
+              Ref: FAQApi
+
+  EditTopicFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-delete-faq"
+      Handler: edit-topic.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FAQTopics
+      Events:
+        CheckCardStatus:
+          Type: Api 
+          Properties:
+            Path: /topic
+            Method: PUT
+            RestApiId:
+              Ref: FAQApi
+
+  GetTopicFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-get-faq"
+      Handler: get-topic.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FAQTopics
+      Events:
+        CheckCardStatus:
+          Type: Api 
+          Properties:
+            Path: /topic/{id}
+            Method: GET
+            RestApiId:
+              Ref: FAQApi
+  
+  GetTopicFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-get-faq"
+      Handler: list-topics.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FAQTopics
+      Events:
+        CheckCardStatus:
+          Type: Api 
+          Properties:
+            Path: /topics
+            Method: GET
+            RestApiId:
+              Ref: FAQApi
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameConfiguration: 
+        CaseSensitive: false
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      UserPoolName: !Sub "alura-med-user-pool-${deploymentEnvironment}"
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:3001
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${paramServiceName}-${paramEnvironment}"
+      UserPoolId: !Ref UserPool
+      
+  # Creates a federeated Identity pool
+  IdentityPool:
+    Type: "AWS::Cognito::IdentityPool"
+    Properties:
+      IdentityPoolName: !Sub "${paramServiceName}-${paramEnvironment}-identity-pool-${deploymentEnvironment}"
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders: 
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !GetAtt UserPool.ProviderName
+
+  # Create a role for unauthorized acces to AWS resources. 
+  # Very limited access. Only allows users in the previously created Identity Pool
+  CognitoUnAuthorizedRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal: 
+              Federated: "cognito-identity.amazonaws.com"
+            Action: 
+              - "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals: 
+                "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
+              "ForAnyValue:StringLike":
+                "cognito-identity.amazonaws.com:amr": unauthenticated
+      Policies:
+        - PolicyName: "CognitoUnauthorizedPolicy"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action:
+                  - "mobileanalytics:PutEvents"
+                  - "cognito-sync:*"
+                Resource: "*"
+
+  # Create a role for authorized acces to AWS resources. 
+  # Control what your user can access. This example only allows Lambda invokation
+  # Only allows users in the previously created Identity Pool
+  CognitoAuthorizedRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal: 
+              Federated: "cognito-identity.amazonaws.com"
+            Action: 
+              - "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals: 
+                "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
+              "ForAnyValue:StringLike":
+                "cognito-identity.amazonaws.com:amr": authenticated
+      Policies:
+        - PolicyName: "CognitoAuthorizedPolicy"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action:
+                  - "mobileanalytics:PutEvents"
+                  - "cognito-sync:*"
+                  - "cognito-identity:*"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "execute-api:Invoke"
+                Resource: !Sub "arn:aws:execute-api:${AWS::Region}:*:${FAQApi}/*/*/*"
+    
+  # Assigns the roles to the Identity Pool
+  IdentityPoolRoleMapping:
+    Type: "AWS::Cognito::IdentityPoolRoleAttachment"
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt "CognitoAuthorizedRole.Arn"
+        unauthenticated: !GetAtt "CognitoUnAuthorizedRole.Arn"
+
+
+  FAQTopics:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: FAQ_TOPICS_TABLE
+      AttributeDefinitions:
+        - AttributeName: topic_id
+          AttributeType: S
+        - AttributeName: title
+          AttributeType: S
+        - AttributeName: content
+          AttributeType: S
+      KeySchema:
+        - AttributeName: topic_id
+          KeyType: HASH
+        - AttributeName: title
+          KeyType: RANGE
+        - AttributeName: content
+          KeyType: RANGE
+
+Outputs:
+  CognitoID:
+    Description: The Cognito UserPool ID
+    Value: !Ref UserPool
+  CognitoClientID:
+    Description: The Cognito UserPool Client ID
+    Value: !Ref UserPoolClient
+  IdentityPoolID:
+    Description: The Cognito IdentityPool ID
+    Value: !Ref IdentityPool
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL for Prod stage"
+    Value: !Sub "https://${ApiGatewayApi}.execute-api.${AWS::Region}.amazonaws.com/${deploymentEnvironment}/"
