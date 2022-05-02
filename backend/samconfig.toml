@@ -5,7 +5,7 @@ version = 0.1
 stack_name = "aws-psa-interview"
 s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-c0hvvcgdo9jm"
 s3_prefix = "aws-psa-interview"
-region = "us-east-2"
+region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "paramEnvironment=\"stage\" paramServiceName=\"psa-interview\" paramDomainName=\"psa.luisfelipesouza.digital\" paramCertificateArn=\"arn:aws:acm:us-east-2:111222333444:certificate/11122233334-3333-48933e-aa59-111223aasda\" paramHostedZoneId=\"Z09999999XXZZYYYWWWW9\""
+parameter_overrides = "paramEnvironment=\"stage\" paramServiceName=\"psa-interview\" fromMailIdentityName=\"psainterviewfrom@gmail.com\" toMailIdentityName=\"psainterviewto@gmail.com\""
 image_repositories = []

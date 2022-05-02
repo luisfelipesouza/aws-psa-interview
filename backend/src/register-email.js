@@ -4,32 +4,31 @@ const { v4: uuidv4 } = require("uuid");
 const dynamoDb = new AWS.DynamoDB.DocumentClient();
 
 const params = {
-  TableName: process.env.FAQ_TABLE,
+  TableName: process.env.EMAIL_TABLE,
 };
 
 module.exports.lambdaHandler = async (event) => {
   if (event.httpMethod !== "POST") {
     throw new Error(
-      `only accepts POST method, you tried: ${event.httpMethod} method.`
+      `only accepts GET method, you tried: ${event.httpMethod} method.`
     );
   }
-
   try {
-    const timestamp = new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '')
-    const user_id = event.requestContext.authorizer.claims["cognito:username"];
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/T/, " ")
+      .replace(/\..+/, "");
 
     let data = JSON.parse(event.body);
 
-    const { title, content, artist } = data;
+    const { name, email, body } = data;
 
     const topic = {
-      user_id: user_id,
-      topic_id: uuidv4(),
-      title,
-      content,
-      artist,
+      message_id: uuidv4(),
+      name,
+      email,
+      body,
       created_at: timestamp,
-      updated_at: timestamp,
     };
 
     await dynamoDb
@@ -53,11 +52,15 @@ module.exports.lambdaHandler = async (event) => {
     console.error("Error", ex);
     return {
       statusCode: ex.statusCode ? ex.statusCode : 500,
-      body: JSON.stringify({
-        error: ex.name ? ex.name : "Exception",
-        message: ex.message ? ex.message : "Unknown error",
-        stack: ex.stack ? ex.stack : "Unknown stack",
-      }, null, 2),
+      body: JSON.stringify(
+        {
+          error: ex.name ? ex.name : "Exception",
+          message: ex.message ? ex.message : "Unknown error",
+          stack: ex.stack ? ex.stack : "Unknown stack",
+        },
+        null,
+        2
+      ),
     };
   }
 };

@@ -2,11 +2,8 @@ include {
   path = find_in_parent_folders()
 }
 
-locals {
-  tf-module-version = "1.0"
-}
 terraform {
-  source  = "git::git@github.com:luisfelipesouza/tf-module-certificate.git"
+  source  = "git::git@github.com://luisfelipesouza/tf-module-certificate.git"
 }
 
 dependency "domain" {

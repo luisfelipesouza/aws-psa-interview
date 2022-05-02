@@ -11,27 +11,23 @@ Parameters:
     Default: stage
   paramServiceName:
     Type: String
-  paramDomainName:
+  fromMailIdentityName:
     Type: String
-  paramCertificateArn:
-    Type: String
-  paramHostedZoneId:
+  toMailIdentityName:
     Type: String
 
 Globals:
   Function:
     Layers:
       - !Ref LayerDepencies
-      - !Ref LayerFunctions
-    Runtime: nodejs14.x
-    Timeout: 15
-    Tracing: Active
+    MemorySize: 128
+    Timeout: 100
     Environment:
       Variables:
-        FAQ_TABLE: !Ref FAQTopics
+        FAQ_TABLE: !Ref FAQTopicsTable
+        EMAIL_TABLE: !Ref EmailSupportTable
         # Reuse connection to DynamoDB to improve response time
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
-
 
 Resources:
   # API Gateway resource
@@ -39,24 +35,27 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       Name: !Sub "${paramServiceName}-${paramEnvironment}"
-      StageName: !Sub "${paramServiceName}-${paramEnvironment}"
+      StageName: !Sub "${paramEnvironment}"
       #EndpointConfiguration: REGIONAL
       Cors:
         AllowMethods: "'*'"
         AllowHeaders: "'*'"
         AllowOrigin: "'*'"
-      Domain:
-        DomainName: !Sub "${paramDomainName}"
-        CertificateArn: !Sub "${paramCertificateArn}"
-        # EndpointConfiguration: REGIONAL
-        Route53:
-          HostedZoneId: !Sub "${paramHostedZoneId}"
       Auth:
         AddDefaultAuthorizerToCorsPreflight: false
         Authorizers:
           CognitoAuthorizer:
             UserPoolArn: !GetAtt "UserPool.Arn"
         DefaultAuthorizer: CognitoAuthorizer
+
+  GatewayResponseDefault4XX:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseType: DEFAULT_4XX
+      RestApiId: !Ref FAQApi
 
   CreateTopicFunction:
     Type: AWS::Serverless::Function 
@@ -67,16 +66,16 @@ Resources:
       Runtime: nodejs14.x
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref FAQTopics
+            TableName: !Ref FAQTopicsTable
       Events:
-        CheckCardStatus:
+        CreateApiEvent:
           Type: Api 
           Properties:
             Path: /topic
             Method: POST
             RestApiId:
               Ref: FAQApi
-  
+
   DeleteTopicFunction:
     Type: AWS::Serverless::Function 
     Properties:
@@ -86,12 +85,12 @@ Resources:
       Runtime: nodejs14.x
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref FAQTopics
+            TableName: !Ref FAQTopicsTable
       Events:
-        CheckCardStatus:
+        DeleteApiEvent:
           Type: Api 
           Properties:
-            Path: /topic
+            Path: /topic/{topic_id}
             Method: DELETE
             RestApiId:
               Ref: FAQApi
@@ -100,17 +99,17 @@ Resources:
     Type: AWS::Serverless::Function 
     Properties:
       CodeUri: src/
-      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-delete-faq"
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-edit-faq"
       Handler: edit-topic.lambdaHandler
       Runtime: nodejs14.x
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref FAQTopics
+            TableName: !Ref FAQTopicsTable
       Events:
-        CheckCardStatus:
+        EditApiEvent:
           Type: Api 
           Properties:
-            Path: /topic
+            Path: /topic/{topic_id}
             Method: PUT
             RestApiId:
               Ref: FAQApi
@@ -124,34 +123,83 @@ Resources:
       Runtime: nodejs14.x
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref FAQTopics
+            TableName: !Ref FAQTopicsTable
       Events:
-        CheckCardStatus:
+        GetApiEvent:
           Type: Api 
           Properties:
-            Path: /topic/{id}
+            Path: /topic/{topic_id}
             Method: GET
             RestApiId:
               Ref: FAQApi
+            Auth:
+              Authorizer: NONE
   
-  GetTopicFunction:
+  ListTopicsFunction:
     Type: AWS::Serverless::Function 
     Properties:
       CodeUri: src/
-      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-get-faq"
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-list-faq"
       Handler: list-topics.lambdaHandler
       Runtime: nodejs14.x
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref FAQTopics
+            TableName: !Ref FAQTopicsTable
       Events:
-        CheckCardStatus:
+        ListApiEvent:
           Type: Api 
           Properties:
             Path: /topics
             Method: GET
             RestApiId:
               Ref: FAQApi
+            Auth:
+              Authorizer: NONE
+
+  RegisterEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-register-email"
+      Handler: register-email.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmailSupportTable
+      Events:
+        ListApiEvent:
+          Type: Api 
+          Properties:
+            Path: /message
+            Method: POST
+            RestApiId:
+              Ref: FAQApi
+            Auth:
+              Authorizer: NONE
+
+  SendEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      FunctionName: !Sub "${paramEnvironment}-${paramServiceName}-send-email"
+      Handler: send-email.lambdaHandler
+      Runtime: nodejs14.x
+      Policies:
+        - SESCrudPolicy:
+            IdentityName: !Ref fromMailIdentityName
+        - SESCrudPolicy:
+            IdentityName: !Ref toMailIdentityName
+      Environment:
+        Variables:
+          FROM_EMAIL: !Ref fromMailIdentityName
+          TO_EMAIL: !Ref toMailIdentityName
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt EmailSupportTable.StreamArn
+            BatchSize: 1
+            StartingPosition: LATEST
 
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -162,15 +210,11 @@ Resources:
         - email
       UsernameAttributes:
         - email
-      UserPoolName: !Sub "alura-med-user-pool-${deploymentEnvironment}"
+      UserPoolName: !Sub "${paramEnvironment}-${paramServiceName}-user-pool"
       Schema:
         - Name: email
           AttributeDataType: String
           Mutable: false
-          Required: true
-        - Name: name
-          AttributeDataType: String
-          Mutable: true
           Required: true
 
   UserPoolClient:
@@ -207,7 +251,7 @@ Resources:
   IdentityPool:
     Type: "AWS::Cognito::IdentityPool"
     Properties:
-      IdentityPoolName: !Sub "${paramServiceName}-${paramEnvironment}-identity-pool-${deploymentEnvironment}"
+      IdentityPoolName: !Sub "${paramServiceName}-${paramEnvironment}-identity-pool"
       AllowUnauthenticatedIdentities: true
       CognitoIdentityProviders: 
         - ClientId: !Ref UserPoolClient
@@ -287,24 +331,43 @@ Resources:
         unauthenticated: !GetAtt "CognitoUnAuthorizedRole.Arn"
 
 
-  FAQTopics:
+  FAQTopicsTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: FAQ_TOPICS_TABLE
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: topic_id
-          AttributeType: S
-        - AttributeName: title
-          AttributeType: S
-        - AttributeName: content
           AttributeType: S
       KeySchema:
         - AttributeName: topic_id
           KeyType: HASH
-        - AttributeName: title
-          KeyType: RANGE
-        - AttributeName: content
-          KeyType: RANGE
+
+  EmailSupportTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: EMAIL_SUPPORT_TABLE
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: message_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: message_id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  LayerDepencies:
+    Type: AWS::Serverless::LayerVersion
+    LayerName: !Sub "${paramEnvironment}-${paramServiceName}-layerDependecies"
+    Properties:
+      LayerName: OetcardDependencies
+      ContentUri: layers/dependencies/.
+      CompatibleRuntimes:
+        - nodejs14.x
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: nodejs14.x
 
 Outputs:
   CognitoID:
@@ -317,5 +380,5 @@ Outputs:
     Description: The Cognito IdentityPool ID
     Value: !Ref IdentityPool
   ApiEndpoint:
-    Description: "API Gateway endpoint URL for Prod stage"
-    Value: !Sub "https://${ApiGatewayApi}.execute-api.${AWS::Region}.amazonaws.com/${deploymentEnvironment}/"
+    Description: "API Gateway orginal endpoint URL"
+    Value: !Sub "https://${FAQApi}.execute-api.${AWS::Region}.amazonaws.com/${paramEnvironment}"
